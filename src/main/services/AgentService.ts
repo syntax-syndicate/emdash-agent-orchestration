@@ -5,6 +5,7 @@ import { app } from 'electron';
 import path from 'path';
 import { existsSync, mkdirSync, createWriteStream, WriteStream } from 'fs';
 import { codexService } from './CodexService';
+import { log } from '../lib/logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -106,6 +107,17 @@ export class AgentService extends EventEmitter {
     );
 
     if (providerId === 'claude') {
+      // Get the current branch name from the worktree to ensure Claude Code uses the correct branch
+      let currentBranch: string | undefined;
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: worktreePath,
+        });
+        currentBranch = stdout.trim();
+      } catch {
+        // If we can't get the branch, continue without it
+      }
+
       // Try SDK first (preferred), fallback to CLI with safe edit flags
       let usedSdk = false;
       try {
@@ -194,6 +206,11 @@ export class AgentService extends EventEmitter {
           '--allowedTools',
           'Read',
         ];
+        // Log branch info for debugging
+        if (currentBranch) {
+          log.debug(`Claude Code running in worktree ${worktreePath} on branch ${currentBranch}`);
+        }
+
         const child = spawn('claude', args, {
           cwd: worktreePath,
           stdio: ['ignore', 'pipe', 'pipe'],

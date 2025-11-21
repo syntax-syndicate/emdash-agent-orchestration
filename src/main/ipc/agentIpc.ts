@@ -1,7 +1,23 @@
 import { ipcMain, BrowserWindow, Notification } from 'electron';
 import { agentService } from '../services/AgentService';
 import { codexService } from '../services/CodexService';
+import { worktreeService } from '../services/WorktreeService';
 import { getAppSettings } from '../settings';
+import { log } from '../lib/logger';
+import { existsSync, statSync } from 'fs';
+import path from 'path';
+
+/**
+ * Check if a path is a git worktree (has .git as a file, not a directory)
+ */
+function isWorktreePath(checkPath: string): boolean {
+  try {
+    const gitMeta = path.join(checkPath, '.git');
+    return existsSync(gitMeta) && statSync(gitMeta).isFile();
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Show a system notification for agent task completion.
@@ -74,7 +90,38 @@ export function registerAgentIpc() {
       }
     ) => {
       try {
-        await agentService.startStream(args);
+        // Resolve worktree path if workspaceId matches a worktree ID
+        // Worktree IDs start with 'wt-' (from WorktreeService.stableIdFromPath)
+        let resolvedPath = args.worktreePath;
+        if (args.workspaceId.startsWith('wt-')) {
+          let worktree = worktreeService.getWorktree(args.workspaceId);
+          // If not found in map, try to find it by checking all worktrees
+          if (!worktree) {
+            const allWorktrees = worktreeService.getAllWorktrees();
+            worktree = allWorktrees.find((wt) => wt.id === args.workspaceId);
+          }
+          if (worktree) {
+            resolvedPath = worktree.path;
+            log.debug(`Resolved worktree path for workspace ${args.workspaceId}: ${resolvedPath}`);
+          } else {
+            // Fallback: check if provided path is actually a worktree
+            if (!isWorktreePath(args.worktreePath)) {
+              log.warn(
+                `Worktree ${args.workspaceId} not found and provided path ${args.worktreePath} doesn't appear to be a worktree. ${args.providerId} may run in wrong directory.`
+              );
+            }
+          }
+        } else {
+          // For non-worktree workspaces (e.g., multi-agent), verify the path is correct
+          if (!isWorktreePath(args.worktreePath)) {
+            log.debug(`Provided path ${args.worktreePath} for workspace ${args.workspaceId} is not a worktree (expected for multi-agent workspaces)`);
+          }
+        }
+        
+        await agentService.startStream({
+          ...args,
+          worktreePath: resolvedPath,
+        });
         return { success: true };
       } catch (e: any) {
         return { success: false, error: e?.message || String(e) };

@@ -1,6 +1,21 @@
 import { ipcMain } from 'electron';
 import { log } from '../lib/logger';
 import { codexService } from './CodexService';
+import { worktreeService } from './WorktreeService';
+import { existsSync, statSync } from 'fs';
+import path from 'path';
+
+/**
+ * Check if a path is a git worktree (has .git as a file, not a directory)
+ */
+function isWorktreePath(checkPath: string): boolean {
+  try {
+    const gitMeta = path.join(checkPath, '.git');
+    return existsSync(gitMeta) && statSync(gitMeta).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export function setupCodexIpc() {
   // Check if Codex is installed
@@ -19,7 +34,35 @@ export function setupCodexIpc() {
   // Create a new agent for a workspace
   ipcMain.handle('codex:create-agent', async (event, workspaceId: string, worktreePath: string) => {
     try {
-      const agent = await codexService.createAgent(workspaceId, worktreePath);
+      // Resolve worktree path if workspaceId matches a worktree ID
+      // Worktree IDs start with 'wt-' (from WorktreeService.stableIdFromPath)
+      let resolvedPath = worktreePath;
+      if (workspaceId.startsWith('wt-')) {
+        let worktree = worktreeService.getWorktree(workspaceId);
+        // If not found in map, try to find it by checking all worktrees
+        if (!worktree) {
+          const allWorktrees = worktreeService.getAllWorktrees();
+          worktree = allWorktrees.find((wt) => wt.id === workspaceId);
+        }
+        if (worktree) {
+          resolvedPath = worktree.path;
+          log.debug(`Resolved worktree path for workspace ${workspaceId}: ${resolvedPath}`);
+        } else {
+          // Fallback: check if provided path is actually a worktree
+          if (!isWorktreePath(worktreePath)) {
+            log.warn(
+              `Worktree ${workspaceId} not found and provided path ${worktreePath} doesn't appear to be a worktree. Codex may run in wrong directory.`
+            );
+          }
+        }
+      } else {
+        // For non-worktree workspaces (e.g., multi-agent), verify the path is correct
+        if (!isWorktreePath(worktreePath)) {
+          log.debug(`Provided path ${worktreePath} for workspace ${workspaceId} is not a worktree (expected for multi-agent workspaces)`);
+        }
+      }
+      
+      const agent = await codexService.createAgent(workspaceId, resolvedPath);
       return { success: true, agent };
     } catch (error) {
       return {
