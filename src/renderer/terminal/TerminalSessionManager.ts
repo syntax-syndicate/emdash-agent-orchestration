@@ -210,6 +210,7 @@ export class TerminalSessionManager {
   }
 
   focus() {
+    if (this.disposed) return;
     this.terminal.focus();
   }
 
